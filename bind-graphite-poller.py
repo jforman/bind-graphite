@@ -71,6 +71,10 @@ def send_memory_stats(args, now, bind_host, bind_xml):
     send_to_carbon(args.carbonhostport, stats)
 
 def send_to_carbon(carbonhostport, stats):
+    if carbonhostport is None:
+        logging.info("No Carbon host:port specified to send statistics to.")
+        return
+
     logging.debug("Pickling statistics to %s", carbonhostport)
     (carbon_host, carbon_port) = carbonhostport.split(":")
     payload = pickle.dumps(stats)
@@ -92,11 +96,15 @@ def main():
     parser.add_argument("--bindhostport",
                         help="BIND DNS hostname and statistics port. Example: dns1:8053")
     parser.add_argument("--carbonhostport",
-                        help="Carbon hostname and pickle port for receiving statistics.")
+                        help="Carbon hostname and pickle port for receiving statistics.",
+                        default=None)
     parser.add_argument("--interval",
                         type=int,
                         default=60,
                         help="Time between polling BIND for statistics and sending to Graphite. Default: 60.")
+    parser.add_argument("--onetime",
+                        action="store_true",
+                        help="Query configured BIND host once and quit.")
     parser.add_argument("-v", "--verbose",
                         choices=[1, 2, 3],
                         type=int,
@@ -113,11 +121,10 @@ def main():
 
     logging.basicConfig(format=LOGGING_FORMAT, level=logging_level)
     (bind_host, bind_port) = args.bindhostport.split(":")
-    stats = []
 
     while True:
         start_timestamp = time.time()
-        logging.info("Gathering statistics to send to Carbon %s. Interval: %d seconds.", args.carbonhostport, args.interval)
+        logging.info("Gathering statistics to send to Carbon %s.", args.carbonhostport)
         try:
             bind_xml = ET.fromstring(get_bind_stats_xml(args.bindhostport))
         except PollerError:
@@ -129,7 +136,11 @@ def main():
             send_memory_stats(args, int(start_timestamp), bind_host, bind_xml)
             elapsed_time = time.time() - start_timestamp
             logging.info("Finished sending BIND statistics to carbon. (Elaped time: %.2f seconds.)", elapsed_time)
-        finally:
+
+        if args.onetime:
+            logging.info("One time query. Exiting.")
+            break
+        else:
             time.sleep(args.interval)
     
 
