@@ -121,6 +121,7 @@ def main():
 
     logging.basicConfig(format=LOGGING_FORMAT, level=logging_level)
     (bind_host, bind_port) = args.bindhostport.split(":")
+    hostname = bind_host.split(".")[0]
 
     while True:
         start_timestamp = time.time()
@@ -131,9 +132,9 @@ def main():
             logging.error("Error encountered, skipping this iteration.")
             pass
         else:
-            send_server_stats(args, int(start_timestamp), bind_host, bind_xml)
-            send_zones_stats(args, int(start_timestamp), bind_host, bind_xml)
-            send_memory_stats(args, int(start_timestamp), bind_host, bind_xml)
+            send_server_stats(args, int(start_timestamp), hostname, bind_xml)
+            send_zones_stats(args, int(start_timestamp), hostname, bind_xml)
+            send_memory_stats(args, int(start_timestamp), hostname, bind_xml)
             elapsed_time = time.time() - start_timestamp
             logging.info("Finished sending BIND statistics to carbon. (Elaped time: %.2f seconds.)", elapsed_time)
 
