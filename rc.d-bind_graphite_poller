@@ -1,0 +1,14 @@
+#!/bin/sh
+
+## /etc/rc.conf.local stanza
+# bind_graphite_poller_flags="--bindhostport bindhost:8053 --carbonhostport carbonhost:2004"
+# bind_graphite_poller_user="nobody"
+
+daemon="/usr/local/bind-graphite/bind-graphite-poller.py"
+
+. /etc/rc.d/rc.subr
+
+rc_bg=YES
+pexp=".*python.* ${daemon}"
+
+rc_cmd $1
