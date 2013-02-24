@@ -50,7 +50,10 @@ def send_zones_stats(args, now, bind_host, bind_xml):
         if not zone_name.endswith("/IN"):
             continue
         zone_name = zone_name.rstrip("/IN")
+        zone_serial = int(zone.find("serial").text)
         zone_compiled = zone_name.replace(".", "-")
+        metric = "dns.%s.zone.%s.serial" % (bind_host, zone_compiled)
+        stats.append((metric, (now, zone_serial)))
         for counter in zone.iterfind(".//counters/"):
             value = int(counter.text)
             metric = "dns.%s.zone.%s.%s" % (bind_host, zone_compiled, counter.tag)
