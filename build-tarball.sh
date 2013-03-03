@@ -15,7 +15,7 @@ else
     version=$1
 fi
 
-package_name="bind-graphite-$version.tar"
+package_name="bind-graphite-$version.tgz"
 
 fpm -s dir -t tar -n bind-graphite \
     -v $version \
