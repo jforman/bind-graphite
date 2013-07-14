@@ -1,158 +1,211 @@
 #!/usr/bin/env python
 
+"""Insert BIND server/zone/memory statistics info into Graphite.
+
+Handles the case where XML is found in a file as opposed to querying
+BIND's statistics port synchronously.
+"""
+
 import argparse
 import logging
 import pickle
 import socket
 import struct
+import sys
 import time
 import urllib2
 import xml.etree.ElementTree as ET
 
 LOGGING_FORMAT = "%(asctime)s : %(levelname)s : %(message)s"
 
+
 class PollerError(Exception):
+    """Base class when retrieving/parsing BIND XML. """
     pass
 
-def get_bind_stats_xml(bindhostport):
-    """Given a host:port, fetch XML from BIND statistics port."""
-    try:
-        req = urllib2.urlopen("http://%s" % bindhostport)
-    except urllib2.URLError, u_error:
-        logging.error("Unable to query BIND (%s) for statistics. Reason: %s.", bindhostport, u_error)
-        raise PollerError
 
-    xml_data = req.read()
-    return xml_data
+class Bind(object):
+    """Bind class for BIND statistics XML."""
 
-def send_server_stats(args, now, bind_host, bind_xml):
-    stats = []
-    queries_in = bind_xml.iterfind(".//server/queries-in/rdtype")
-    for rdtype in queries_in:
-        metric = "dns.%s.queries-in.%s" % (bind_host, rdtype.find("name").text)
-        value = int(rdtype.find("counter").text)
-        stats.append((metric, (now, value)))
+    def __init__(self, args):
+        self._args = args
+        self.bind_xml = ""
+        self.carbon = self._args.carbon
+        if self.carbon:
+            self.carbon_host, self.carbon_port = self.carbon.split(":")
 
-    requests = bind_xml.iterfind(".//server/requests/opcode")
-    for request in requests:
-        metric = "dns.%s.requests.%s" % (bind_host, request.find("name").text)
-        value = int(request.find("counter").text)
-        stats.append((metric, (now, value)))
+        if self._args.bind:
+            self.hostname, self.port = self._args.bind.split(":")
 
-    logging.debug("Server Statistics for %s: %s", bind_host, stats)
-    send_to_carbon(args.carbonhostport, stats)
+            if self.hostname == "localhost":
+                self.hostname = socket.gethostname().split(".")[0]
+            else:
+                self.hostname = self.hostname.split(".")[0]
+        else:
+            self.hostname = "FILE"
 
-def send_zones_stats(args, now, bind_host, bind_xml):
-    stats = []
-    zones_tree = bind_xml.iterfind(".//views/view/zones/zone")
-    for zone in zones_tree:
-        zone_name = zone.find("name").text
-        if not zone_name.endswith("/IN"):
-            continue
-        zone_name = zone_name.rstrip("/IN")
-        zone_serial = int(zone.find("serial").text)
-        zone_compiled = zone_name.replace(".", "-")
-        metric = "dns.%s.zone.%s.serial" % (bind_host, zone_compiled)
-        stats.append((metric, (now, zone_serial)))
-        for counter in zone.iterfind(".//counters/"):
-            value = int(counter.text)
-            metric = "dns.%s.zone.%s.%s" % (bind_host, zone_compiled, counter.tag)
-            stats.append((metric, (now, value)))
+        self.is_xml_file = self._args.xml_path
+        self.timestamp = time.time()
+        self.xml_path = self._args.xml_path
 
-    logging.debug("Zone Statistics for %s: %s", bind_host, stats)
-    send_to_carbon(args.carbonhostport, stats)
-    
-def send_memory_stats(args, now, bind_host, bind_xml):
-    stats = []
-    memory_tree = bind_xml.iterfind(".//bind/statistics/memory/summary/")
-    for element in memory_tree:
-        value = int(element.text)
-        metric = "dns.%s.memory.%s" % (bind_host, element.tag)
-        stats.append((metric, (now, value)))
+    def SendMemoryStats(self):
+        """Parse server memory statistics and send to carbon."""
+        stats = []
+        memory_tree = self.bind_xml.iterfind(".//bind/statistics/memory/summary/")
+        for element in memory_tree:
+            value = int(element.text)
+            metric = "dns.%s.memory.%s" % (self.hostname, element.tag)
+            stats.append((metric, (self.timestamp, value)))
 
-    logging.debug("Memory Statistics for %s: %s", bind_host, stats)
-    send_to_carbon(args.carbonhostport, stats)
+        logging.debug("Memory Statistics for %s: %s", self.hostname, stats)
+        self.SendToCarbon(stats)
 
-def send_to_carbon(carbonhostport, stats):
-    if carbonhostport is None:
-        logging.info("No Carbon host:port specified to send statistics to.")
-        return
+    def SendServerStats(self):
+        """Parse server non-zone related statistics and send to Carbon."""
+        stats = []
+        queries_in = self.bind_xml.iterfind(".//server/queries-in/rdtype")
+        for rdtype in queries_in:
+            metric = "dns.%s.queries-in.%s" % (self.hostname, rdtype.find("name").text)
+            value = int(rdtype.find("counter").text)
+            stats.append((metric, (self.timestamp, value)))
 
-    logging.debug("Pickling statistics to %s", carbonhostport)
-    (carbon_host, carbon_port) = carbonhostport.split(":")
-    payload = pickle.dumps(stats)
-    header = struct.pack("!L", len(payload))
-    message = header + payload
-    try:
-        logging.debug("Opening connection to Carbon at %s", carbonhostport)
-        carbon_sock = socket.create_connection((carbon_host, carbon_port), 10)
-        logging.debug("Sending statistics to Carbon.")
-        carbon_sock.sendall(message)
-        logging.debug("Done sending statistics to Carbon.")
-        carbon_sock.close()
-        logging.debug("Closing connection to Carbon.")
-    except socket.error, s_error:
-        logging.error("Error sending to Carbon %s. Reason : %s", carbonhostport, s_error)
+        requests = self.bind_xml.iterfind(".//server/requests/opcode")
+        for request in requests:
+            metric = "dns.%s.requests.%s" % (self.hostname, request.find("name").text)
+            value = int(request.find("counter").text)
+            stats.append((metric, (self.timestamp, value)))
+
+        logging.debug("Server Statistics for %s: %s", self.hostname, stats)
+        self.SendToCarbon(stats)
+
+
+    def SendZoneStats(self):
+        """Parse by view/zone statistics and send to Carbon."""
+        stats = []
+        zones_tree = self.bind_xml.iterfind(".//views/view/zones/zone")
+        for zone in zones_tree:
+            zone_name = zone.find("name").text
+            zone_split = zone_name.split("/") # "foo.com/IN/viewname"
+            if zone_split[1] != "IN":
+                continue
+            zone_name = zone_split[0]
+            if len(zone_split) == 3:
+                zone_view = zone_split[2]
+            else:
+                zone_view = False
+
+            zone_compiled = zone_name.replace(".", "-")
+            metric_base = "dns.%s.%s" % (self.hostname, zone_compiled)
+
+            metric_serial = metric_base + ".serial"
+            zone_serial = int(zone.find("serial").text)
+            stats.append((metric_serial, (self.timestamp, zone_serial)))
+            if zone_view:
+                metric_counter = metric_base + "." + zone_view
+            else:
+                metric_counter = metric_base
+            for counter in zone.iterfind(".//counters/"):
+                value = int(counter.text)
+                metric = metric_counter + "." + counter.tag
+                stats.append((metric, (self.timestamp, value)))
+
+        logging.debug("Zone Statistics for %s: %s", self.hostname, stats)
+        self.SendToCarbon(stats)
+
+    def ReadXml(self):
+        """Read Bind statistics XML into self.bind_xml.
+
+        If XML file path is passed, attempt to read the file.
+        If no XML file path is given and host:port provided, query BIND.
+        """
+        if self.is_xml_file:
+            with open(self.xml_path, "r") as xml_fh:
+                xml_data = xml_fh.read()
+            self.bind_xml = ET.fromstring(xml_data)
+        else:
+            try:
+                req = urllib2.urlopen("http://%s:%s" % (self.hostname, self.port))
+            except urllib2.URLError, u_error:
+                logging.error("Unable to query BIND (%s) for statistics. Reason: %s.",
+                              self.hostname,
+                              u_error)
+                raise PollerError
+            self.bind_xml = ET.fromstring(req.read())
+
+    def SendToCarbon(self, stats):
+        if self.carbon is None:
+            logging.info("No Carbon host:port specified which to send statistics.")
+            return
+
+        logging.debug("Pickling statistics to %s", self.carbon)
+        payload = pickle.dumps(stats)
+        header = struct.pack("!L", len(payload))
+        message = header + payload
+        try:
+            logging.debug("Opening connection to Carbon at %s", self.carbon)
+            carbon_sock = socket.create_connection((self.carbon_host, self.carbon_port), 10)
+            logging.debug("Sending statistics to Carbon.")
+            carbon_sock.sendall(message)
+            logging.debug("Done sending statistics to Carbon.")
+            carbon_sock.close()
+            logging.debug("Closing connection to Carbon.")
+        except socket.error, s_error:
+            logging.error("Error sending to Carbon %s. Reason : %s", self.carbon, s_error)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Parse BIND statistics and pass them off to Graphite.")
-    parser.add_argument("--bindhostport",
+    parser = argparse.ArgumentParser(description="Parse BIND statistics and insert them into Graphite.")
+    parser.add_argument("--bind",
                         help="BIND DNS hostname and statistics port. Example: dns1:8053")
-    parser.add_argument("--carbonhostport",
+    parser.add_argument("--carbon",
                         help="Carbon hostname and pickle port for receiving statistics.",
                         default=None)
     parser.add_argument("--interval",
                         type=int,
                         default=60,
-                        help="Time between polling BIND for statistics and sending to Graphite. Default: 60.")
+                        help="Seconds between polling/sending executions. Default: %(default)s.")
     parser.add_argument("--onetime",
                         action="store_true",
                         help="Query configured BIND host once and quit.")
     parser.add_argument("-v", "--verbose",
-                        choices=[1, 2, 3],
-                        type=int,
-                        default=2,
-                        help="Verbosity of output. 1:ERROR, 2:INFO (Default), 3:DEBUG.")
+                        choices=["error", "info", "debug"],
+                        default="info",
+                        help="Verbosity of output. Choices: %(choices)s")
+    parser.add_argument("--xml_path",
+                        default=None,
+                        help="Path to XML file containing BIND statistics to process.")
 
     args = parser.parse_args()
-    if args.verbose == 1:
+    if args.verbose == "error":
         logging_level = logging.ERROR
-    elif args.verbose == 3:
+    elif args.verbose == "debug":
         logging_level = logging.DEBUG
     else:
         logging_level = logging.INFO
 
     logging.basicConfig(format=LOGGING_FORMAT, level=logging_level)
-    (bind_host, bind_port) = args.bindhostport.split(":")
-    if bind_host == "localhost":
-        # If querying localhost, use the hostname
-        # in the name of the Graphite metric.
-        metric_hostname = socket.gethostname().split(".")[0]
-    else:
-        metric_hostname = bind_host.split(".")[0]
 
+    bind_obj = Bind(args)
+    bind_obj.ReadXml()
 
     while True:
-        start_timestamp = time.time()
-        logging.info("Gathering statistics to send to Carbon %s.", args.carbonhostport)
-        try:
-            bind_xml = ET.fromstring(get_bind_stats_xml(args.bindhostport))
-        except PollerError:
-            logging.error("Error encountered, skipping this iteration.")
-            pass
-        else:
-            send_server_stats(args, int(start_timestamp), metric_hostname, bind_xml)
-            send_zones_stats(args, int(start_timestamp), metric_hostname, bind_xml)
-            send_memory_stats(args, int(start_timestamp), metric_hostname, bind_xml)
-            elapsed_time = time.time() - start_timestamp
-            logging.info("Finished sending BIND statistics to carbon. (Elaped time: %.2f seconds.)", elapsed_time)
+        logging.info("Gathering statistics to send to Carbon %s.",
+                     args.carbon)
+        bind_obj.SendServerStats()
+        bind_obj.SendZoneStats()
+        bind_obj.SendServerStats()
+        bind_obj.SendMemoryStats()
+        elapsed_time = time.time() - bind_obj.timestamp
+        if bind_obj.carbon:
+            logging.info("Finished sending BIND statistics to carbon. "
+                         "(Elaped time: %.2f seconds.)", elapsed_time)
 
         if args.onetime:
             logging.info("One time query. Exiting.")
-            break
+            return
         else:
             time.sleep(args.interval)
-    
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
