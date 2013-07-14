@@ -18,14 +18,18 @@ An Upstart and rc.d controlling configuration files are provided to facilitate s
 
 The poller has a default 60 second internal between checking BIND for statistics. A typical command line on OpenBSD will look like:
 
-    /usr/local/bind-graphite/bind-graphite-poller.py --bindhostport dns1:8053 --carbonhostport monitor:2004
+    /usr/local/bind-graphite/bind-graphite-poller.py --bind dns1:8053 --carbon monitor:2004
     
 Zone and memory statistic metrics follow the nomenclature like the following:
 
     dns.dns1.memory.TotalUse
     dns.dns1.memory.InUse
-    dns.dns1.zone.vpn-mydomain-net.Requestv4
+    dns.dns1.vpn-mydomain-net.Requestv4
     
+If views are configured, the metric name for each counter will reflect that fact.
+
+    dns.dns1.vpn-mydomain-net.external.Requestv4
+
 Period seperators in zone information are converted to hypens for use in Graphite. Such that vpn.mydomain.net would be displayed as vpn-mydomain-net for the metric structure.
 
 ## TODO
