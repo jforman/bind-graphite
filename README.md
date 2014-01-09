@@ -7,6 +7,7 @@ I wanted a way to display the statistics provided via ISC BIND's XML statistics 
 * ISC BIND. At least version 9.5.x, which provides the statistics-port configuration parameter.
 * Python. At least version 2.7.x
 * Carbon and Graphite
+* (pybindxml)[https://pypi.python.org/pypi/pybindxml/]
 
 ## Installation
 
